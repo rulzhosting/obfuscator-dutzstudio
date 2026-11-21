@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DUTZ STUDIO V4 — Luau Obfuscator</title>
+<style>
+:root{color-scheme:dark;--bg:#09090d;--panel:#15151f;--line:#303044;--muted:#aaaabe;--white:#f5f5fa;--accent:#8b5cf6}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 50% -20%,#292044 0,transparent 48%),var(--bg);color:var(--white);font:15px/1.5 system-ui,Segoe UI,Arial,sans-serif}
+.wrap{max-width:1100px;margin:auto;padding:22px 14px 40px}.brand{text-align:center;padding:20px 0}.tag{display:inline-block;border:1px solid #57428a;border-radius:99px;padding:4px 10px;color:#d5c6ff;font-size:11px;letter-spacing:.12em}.brand h1{font-size:clamp(38px,8vw,68px);line-height:1;margin:14px 0 8px;letter-spacing:.04em;text-shadow:3px 3px 0 #3d2a72}.brand p{color:#b7adcf;letter-spacing:.15em;font-size:11px;margin:0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}.panel{background:linear-gradient(180deg,#191925,#111119);border:1px solid var(--line);border-radius:15px;padding:15px;min-width:0}.panel h2{font-size:14px;margin:0 0 8px;letter-spacing:.08em}.hint{font-size:12px;color:var(--muted);margin:0 0 12px}
+textarea{width:100%;min-height:330px;resize:vertical;background:#090910;border:1px solid #343448;border-radius:10px;color:#e9e7f3;padding:13px;font:13px/1.55 ui-monospace,Consolas,monospace;outline:none}textarea:focus{border-color:var(--accent)}
+.controls{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-top:12px}.btn{border:0;border-radius:10px;padding:11px 16px;font-weight:750;cursor:pointer;color:white;background:var(--accent)}.btn.secondary{background:#292938;border:1px solid #414154}.btn:disabled{opacity:.45;cursor:not-allowed}.status{font-size:12px;color:#c4b5fd;min-height:18px;margin-top:10px}
+.notice{margin-top:15px;padding:13px 15px;border:1px solid #6b4d25;background:#21190e;border-radius:11px;color:#f4d7a1;font-size:12px}.good{border-color:#315b43;background:#102017;color:#b8f1c9}
+@media(max-width:760px){.grid{grid-template-columns:1fr}.wrap{padding:12px}.brand{padding:18px 0}.panel textarea{min-height:250px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="brand">
+ <h1>DUTZ STUDIO</h1>
+ <p>LUAU SCRIPT TOOL • V4</p>
+</header>
+<div class="grid">
+ <section class="panel">
+  <h2>01 / SOURCE CODE</h2>
+  <p class="hint">Tempel script Luau di sini, lalu pilih OBFUSCATOR atau DEOBFUSCATOR. Obfuscator memakai wrapper return(function(...)) dan encoding string sederhana.</p>
+  <textarea id="source" spellcheck="false" placeholder="-- Tempel script Luau di sini&#10;print('Hello Roblox!')"></textarea>
+  <input id="fileInput" type="file" accept=".lua,.luau,.txt,text/plain" hidden>
+  <div class="controls">
+   <button class="btn" id="uploadFile" type="button">UPLOAD FILE .LUA / .TXT</button>
+   <button class="btn" id="obfuscate">OBFUSCATOR LUAU</button>
+   <button class="btn" id="deobfuscate">DEOBFUSCATOR LUAU</button>
+   <button class="btn secondary" id="clear">CLEAR</button>
+  </div>
+ </section>
+ <section class="panel">
+  <h2>02 / OUTPUT LUAU</h2>
+  <p class="hint">DEOBFUSCATOR V4: mencoba membuka wrapper dan encoding yang dikenali, lalu memformat hasil menjadi source Luau yang rapi seperti contoh. VM/enkripsi khusus mungkin hanya terbaca sebagian.</p>
+  <textarea id="output" spellcheck="false" readonly placeholder="Hasil akan muncul di sini..."></textarea>
+  <div class="controls">
+   <button class="btn" id="copy" disabled>COPY</button>
+   <button class="btn secondary" id="download" disabled>DOWNLOAD .LUA</button>
+  </div>
+  <div class="status" id="status" aria-live="polite"></div>
+ </section>
+</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+
+// Upload file Luau/TXT langsung ke kolom SOURCE CODE.
+$('uploadFile').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', async event => {
+ const file = event.target.files && event.target.files[0];
+ if (!file) return;
+ const allowed = /\.(lua|luau|txt)$/i.test(file.name);
+ if (!allowed) {
+  $('status').textContent = 'Format file tidak didukung. Pilih file .lua, .luau, atau .txt.';
+  event.target.value = '';
+  return;
+ }
+ if (file.size > 5 * 1024 * 1024) {
+  $('status').textContent = 'Ukuran file maksimal 5 MB.';
+  event.target.value = '';
+  return;
+ }
+ try {
+  $('source').value = await file.text();
+  $('status').textContent = 'File berhasil dimuat: ' + file.name;
+ } catch (error) {
+  $('status').textContent = 'Gagal membaca file. Coba pilih file lain.';
+ }
+ event.target.value = '';
+});
+
+// Scanner sederhana: menjaga quoted strings, long strings, dan long comments.
+function compressLuau(src) {
+ let out='', i=0, pendingSpace=false;
+ const n=src.length;
+ const isWord=c=>!!c && /[A-Za-z0-9_]/.test(c);
+ const addSpace=()=>{ if(pendingSpace && out && !out.endsWith(' ')) out+=' '; pendingSpace=false; };
+ while(i<n){
+  const c=src[i], next=src[i+1];
+  if(/\s/.test(c)){ pendingSpace=true; i++; continue; }
+
+  // Komentar -- biasa atau long comment --[=[ ... ]=]
+  if(c==='-' && next==='-'){
+   let j=i+2, eq=0;
+   if(src[j]==='['){
+    j++;
+    while(src[j]==='='){eq++;j++;}
+    if(src[j]==='['){
+     const close=']'+'='.repeat(eq)+']';
+     const end=src.indexOf(close,j+1);
+     i=end<0?n:end+close.length;
+     pendingSpace=true;
+     continue;
+    }
+   }
+   while(i<n && src[i]!=='\n' && src[i]!=='\r') i++;
+   pendingSpace=true;
+   continue;
+  }
+
+  // Quoted strings: salin utuh termasuk escape sequence.
+  if(c==='"' || c==="'"){
+   addSpace(); const quote=c; out+=c; i++;
+   while(i<n){
+    const x=src[i]; out+=x; i++;
+    if(x==='\\' && i<n){out+=src[i++];continue;}
+    if(x===quote) break;
+   }
+   continue;
+  }
+
+  // Long strings [=[ ... ]=]
+  if(c==='['){
+   let j=i+1,eq=0;
+   while(src[j]==='='){eq++;j++;}
+   if(src[j]==='['){
+    addSpace(); const close=']'+'='.repeat(eq)+']';
+    const end=src.indexOf(close,j+1);
+    if(end<0){out+=src.slice(i);i=n;}
+    else{out+=src.slice(i,end+close.length);i=end+close.length;}
+    continue;
+   }
+  }
+
+  // Pastikan dua token kata/angka tidak menyatu setelah whitespace dibuang.
+  if(pendingSpace && out){
+   const prev=out[out.length-1];
+   if(isWord(prev) && isWord(c)) out+=' ';
+  }
+  pendingSpace=false;
+  out+=c;i++;
+ }
+ return out.trim();
+}
+
+
+// DUTZ STUDIO V4 — wrapper Luau + encoding literal string sederhana.
+// Ini obfuscation ringan berbasis browser, bukan engine Luraph atau VM.
+// Identifier API/property tidak diubah agar kompatibilitas Luau lebih terjaga.
+function obfuscateLuau(src) {
+ const randomHex = () => Math.floor(Math.random()*0xFFFFFF).toString(16).padStart(6,'0');
+ const alias = '_0x' + randomHex();
+ let out='', i=0, changed=0;
+ const n=src.length;
+
+ while(i<n){
+  const c=src[i], next=src[i+1];
+
+  // Komentar tidak ikut diproses.
+  if(c==='-' && next==='-'){
+   let j=i+2,eq=0;
+   if(src[j]==='['){
+    j++;while(src[j]==='='){eq++;j++;}
+    if(src[j]==='['){
+     const close=']'+'='.repeat(eq)+']';
+     const end=src.indexOf(close,j+1);
+     i=end<0?n:end+close.length;out+=' ';continue;
+    }
+   }
+   while(i<n && src[i]!=='\n' && src[i]!=='\r')i++;
+   out+=' ';continue;
+  }
+
+  // Long string Luau [=[...]=] dipertahankan utuh.
+  if(c==='['){
+   let j=i+1,eq=0;while(src[j]==='='){eq++;j++;}
+   if(src[j]==='['){
+    const close=']'+'='.repeat(eq)+']';
+    const end=src.indexOf(close,j+1);
+    if(end<0){out+=src.slice(i);break;}
+    out+=src.slice(i,end+close.length);i=end+close.length;continue;
+   }
+  }
+
+  // String pendek tanpa escape diubah menjadi pemanggilan alias string.char.
+  if(c==='"' || c==="'"){
+   const quote=c;let j=i+1,value='',safe=true,closed=false;
+   while(j<n){
+    const x=src[j];
+    if(x===quote){closed=true;j++;break;}
+    if(x==='\\' || x==='\n' || x==='\r'){safe=false;break;}
+    value+=x;j++;
+   }
+   if(closed && safe && value.length>0 && /^[\x20-\x7E]*$/.test(value)){
+    const codes=Array.from(value).map(ch=>ch.charCodeAt(0));
+    out+=alias+'('+codes.join(',')+')';changed++;i=j;continue;
+   }
+   if(!closed || !safe){
+    let k=i+1;
+    while(k<n){const x=src[k++];if(x==='\\' && k<n){k++;continue;}if(x===quote)break;}
+    out+=src.slice(i,k);i=k;continue;
+   }
+   out+=src.slice(i,j);i=j;continue;
+  }
+  out+=c;i++;
+ }
+
+ // Wrapper mengikuti bentuk return(function(...)); source asli tetap dijalankan
+ // di dalam fungsi dan nilai return-nya diteruskan ke pemanggil.
+ const body = compressLuau(out);
+ if(changed===0){
+  return 'return(function(...)' + body + 'end)(...)';
+ }
+ return 'return(function(...)local '+alias+'=string.char;' + body + 'end)(...)';
+}
+
+// Formatter sederhana agar hasil deobfuscation kembali mudah dibaca.
+// String dan komentar dipertahankan agar isi script tidak ikut diubah.
+function formatLuau(src) {
+ // Beautifier heuristik untuk membuat hasil lebih mirip source Luau biasa.
+ // Lexer menjaga string/long-string/comment agar isi literal tidak berubah.
+ const tokens=[];
+ let i=0;
+ while(i<src.length){
+  const c=src[i], n=src[i+1];
+  if(/\s/.test(c)){i++;continue;}
+  if(c==='-' && n==='-'){
+   let j=i+2,eq=0;
+   if(src[j]==='['){j++;while(src[j]==='='){eq++;j++;}if(src[j]==='['){
+    const close=']'+'='.repeat(eq)+']';const e=src.indexOf(close,j+1);const stop=e<0?src.length:e+close.length;
+    tokens.push({type:'comment',value:src.slice(i,stop)});i=stop;continue;
+   }}
+   let stop=i+2;while(stop<src.length && src[stop]!=='\n' && src[stop]!=='\r')stop++;
+   tokens.push({type:'comment',value:src.slice(i,stop)});i=stop;continue;
+  }
+  if(c==='"' || c==="'"){
+   const q=c;let j=i+1;while(j<src.length){if(src[j]==='\\'){j+=2;continue;}if(src[j++]===q)break;}
+   tokens.push({type:'literal',value:src.slice(i,j)});i=j;continue;
+  }
+  if(c==='['){let j=i+1,eq=0;while(src[j]==='='){eq++;j++;}if(src[j]==='['){
+   const close=']'+'='.repeat(eq)+']';const e=src.indexOf(close,j+1);const stop=e<0?src.length:e+close.length;
+   tokens.push({type:'literal',value:src.slice(i,stop)});i=stop;continue;
+  }}
+  if(/[A-Za-z0-9_]/.test(c)){let j=i+1;while(j<src.length && /[A-Za-z0-9_]/.test(src[j]))j++;tokens.push({type:'word',value:src.slice(i,j)});i=j;continue;}
+  const op=['...','==','~=','<=','>=','..','+=','-=','*=','/=','::'];
+  const found=op.find(x=>src.startsWith(x,i));
+  if(found){tokens.push({type:'symbol',value:found});i+=found.length;continue;}
+  tokens.push({type:'symbol',value:c});i++;
+ }
+ const lines=[];let line='',indent=0,prev=null,paren=0,bracket=0,brace=0;
+ let pendingFunction=false, functionParenDepth=-1, pendingDo=false;
+ const pad=()=> '    '.repeat(Math.max(0,indent));
+ const flush=()=>{const v=line.trim();if(v)lines.push(pad()+v);line='';};
+ const add=(v,space=false)=>{if(space && line && !line.endsWith(' '))line+=' ';line+=v;};
+ const binary=new Set(['=','+','-','*','/','%','==','~=','<','>','<=','>=','..','and','or']);
+ const starters=new Set(['local','return','if','for','while','function']);
+ for(let k=0;k<tokens.length;k++){
+  const t=tokens[k],v=t.value,next=tokens[k+1]?.value;
+  if(t.type==='comment'){if(line.trim())add(' ');add(v);flush();prev=t;continue;}
+  if(t.type==='word' && starters.has(v) && paren===0 && bracket===0 && brace===0 && line.trim()){
+   // Keep "local function" and assignments to anonymous functions together.
+   if(!(v==='function' && (/\blocal\s*$/.test(line) || /=\s*$/.test(line)))) flush();
+  }
+  if(v==='end'){
+   flush();indent=Math.max(0,indent-1);add('end');flush();prev=t;pendingDo=false;continue;
+  }
+  if(v==='until'){
+   flush();indent=Math.max(0,indent-1);add('until',true);prev=t;continue;
+  }
+  if(v==='else' || v==='elseif'){
+   flush();indent=Math.max(0,indent-1);add(v);if(v==='else') {flush();indent++;}prev=t;continue;
+  }
+  if(v==='function') pendingFunction=true;
+  if(v==='repeat'){if(line.trim())flush();add(v);flush();indent++;prev=t;continue;}
+  if(v==='then') {add(v,true);flush();indent++;prev=t;continue;}
+  if(v==='do') {add(v,true);flush();indent++;pendingDo=false;prev=t;continue;}
+  if(v===';'){add(v);flush();prev=t;continue;}
+  if(v===','){add(v);prev=t;continue;}
+  if(v===')' || v===']' || v==='}') {
+   add(v);if(v===')'){const closesFunction=pendingFunction && paren===functionParenDepth;paren=Math.max(0,paren-1);if(closesFunction){flush();indent++;pendingFunction=false;functionParenDepth=-1;}}
+   if(v===']')bracket=Math.max(0,bracket-1);if(v==='}')brace=Math.max(0,brace-1);prev=t;continue;
+  }
+  if(v==='('){add(v,prev?.type==='word' || prev?.value===')');paren++;if(pendingFunction && functionParenDepth<0)functionParenDepth=paren;prev=t;continue;}
+  if(v==='['){add(v);bracket++;prev=t;continue;}
+  if(v==='{'){add(v,true);brace++;prev=t;continue;}
+  if(v==='.' || v===':'){add(v);prev=t;continue;}
+  if(binary.has(v)){add(v,true);line+=' ';prev=t;continue;}
+  const needsSpace=line.length>0 && ((t.type==='word' || t.type==='literal') && (prev?.type==='word' || prev?.type==='literal' || [')',']','}'].includes(prev?.value)));
+  add(v,needsSpace);prev=t;
+ }
+ flush();
+
+ // Beri jarak antar blok tingkat atas agar tampil seperti source Luau biasa.
+ const spaced=[];
+ for (let idx=0; idx<lines.length; idx++) {
+  const current=lines[idx];
+  const previous=spaced.length ? spaced[spaced.length-1] : '';
+  const topLevel = !/^\\s/.test(current);
+  const startsBlock = /^(local\\s+(function|[A-Za-z_])|function\\s|if\\s|for\\s|while\\s|repeat\\b)/.test(current);
+  const afterTopEnd = previous === 'end' || previous === 'until' || previous.endsWith('end');
+  if (topLevel && spaced.length && (startsBlock || afterTopEnd) && previous !== '') spaced.push('');
+  spaced.push(current);
+ }
+ return spaced.join('\\n').replace(/\\n{3,}/g,'\\n\\n');
+}
+
+// Best-effort deobfuscator V4: membuka pola yang dikenali dan tetap
+// mengeluarkan source jika formatnya tidak dikenal / hanya terbuka sebagian.
+function deobfuscateLuau(src) {
+ let output = String(src || '');
+ let decodedCount = 0;
+ const aliases = new Set();
+
+ // Ulangi pembukaan wrapper sederhana beberapa lapis. Scanner mencari `end`
+ // penutup fungsi tingkat teratas tanpa menganggap kata di dalam string sebagai kode.
+ function unwrapOne(text) {
+  const head = text.match(/^\s*return\s*\(\s*function\s*\([^)]*\)\s*/i);
+  if (!head) return text;
+  let i = head[0].length, depth = 1, quote = '', longClose = null;
+  while (i < text.length) {
+   if (longClose) {
+    if (text.startsWith(longClose, i)) { i += longClose.length; longClose = null; continue; }
+    i++; continue;
+   }
+   const c = text[i], n = text[i+1];
+   if (quote) { if (c === '\\') { i += 2; continue; } if (c === quote) quote = ''; i++; continue; }
+   if (c === '"' || c === "'") { quote = c; i++; continue; }
+   if (c === '-' && n === '-') {
+    let j=i+2, eq=0;
+    if (text[j] === '[') { j++; while (text[j] === '=') {eq++;j++;} if (text[j] === '[') { longClose=']'+'='.repeat(eq)+']'; i=j+1; continue; } }
+    while (i<text.length && text[i] !== '\n') i++;
+    continue;
+   }
+   if (c === '[') { let j=i+1,eq=0; while(text[j]==='='){eq++;j++;} if(text[j]==='['){longClose=']'+'='.repeat(eq)+']';i=j+1;continue;} }
+   if (/[A-Za-z_]/.test(c)) {
+    let j=i+1; while(j<text.length && /[A-Za-z0-9_]/.test(text[j]))j++;
+    const word=text.slice(i,j);
+    if (word==='function' || word==='if' || word==='do' || word==='repeat') depth++;
+    else if (word==='end' || word==='until') depth--;
+    if (depth===0) {
+     let tail=text.slice(j);
+     if (/^\s*\)\s*\([\s\S]*\)\s*;?\s*$/.test(tail)) return text.slice(head[0].length,j);
+     return text;
+    }
+    i=j; continue;
+   }
+   i++;
+  }
+  return text;
+ }
+ for (let layer=0; layer<8; layer++) {
+  const unwrapped=unwrapOne(output);
+  if (unwrapped===output) break;
+  output=unwrapped;
+ }
+
+ // Kenali alias langsung dan alias lokal umum untuk fungsi byte/char.
+ let m;
+ const aliasPatterns = [
+  /\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*string\s*\.\s*char\b/g,
+  /\blocal\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*string\s*\.\s*byte\b/g
+ ];
+ for (const re of aliasPatterns) while ((m=re.exec(output))!==null) aliases.add(m[1]);
+
+ // Dekode string.char(angka, ...) dan alias char yang argumennya literal byte.
+ const charNames=['string\\s*\\.\\s*char',...Array.from(aliases).map(x=>x.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\$&'))];
+ for (const name of charNames) {
+  const re=new RegExp('(?:'+name+')\\s*\\(\\s*(\\d+(?:\\s*,\\s*\\d+)*)\\s*\\)','g');
+  output=output.replace(re,(whole,nums)=>{
+   const values=nums.split(',').map(x=>Number(x.trim()));
+   if(!values.length || values.some(x=>!Number.isInteger(x)||x<0||x>255)) return whole;
+   decodedCount++;
+   return '"'+values.map(x=>String.fromCharCode(x)).join('').replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\n').replace(/\r/g,'\\r').replace(/\t/g,'\\t')+'"';
+  });
+ }
+
+ // Decode escape numerik/hex dalam literal saja; tidak pernah menjalankan source asing.
+ function decodeLiteral(literal) {
+  const q=literal[0];
+  if ((q!=='"' && q!=="'") || literal[literal.length-1]!==q) return literal;
+  const inner=literal.slice(1,-1);
+  const decoded=inner.replace(/\\(\d{1,3})|\\x([0-9a-fA-F]{2})/g,(whole,dec,hex)=>{
+   const code=dec!==undefined?Number(dec):parseInt(hex,16);
+   if(!Number.isInteger(code)||code<0||code>255)return whole;
+   decodedCount++;
+   return String.fromCharCode(code);
+  });
+  return q+decoded.replace(/\\/g,'\\\\').replace(new RegExp(q,'g'),'\\'+q)+q;
+ }
+ // Beberapa obfuscator menumpuk escape lebih dari satu lapisan.
+ for(let pass=0;pass<4;pass++) {
+  const before=output;
+  output=output.replace(/(['"])(?:\\.|(?!\\1)[^\\])*?\1/g,decodeLiteral);
+  if(output===before) break;
+ }
+
+ // Hapus hanya wrapper IIFE yang dikenali; jangan evaluasi kode dari sumber luar.
+ // Pertahankan deklarasi decoder di body agar hasil parsial tetap bisa dianalisis.
+ try { return formatLuau(output); } catch (error) { return output; }
+}
+
+$('obfuscate').addEventListener('click',()=>{
+ const src=$('source').value;
+ if(!src.trim()){$('status').textContent='Masukkan source code terlebih dahulu.';return;}
+ try{
+  $('output').value=obfuscateLuau(src);
+  $('copy').disabled=false;$('download').disabled=false;
+  $('status').textContent='Obfuscation selesai (V4): wrapper return(function(...)) dan encoding string sederhana. Ini bukan engine Luraph/VM; uji hasilnya di Roblox Studio.';
+ }catch(e){$('status').textContent='Gagal: '+e.message;}
+});
+$('deobfuscate').addEventListener('click',()=>{
+ const src=$('source').value;
+ if(!src.trim()){$('status').textContent='Masukkan kode obfuscation terlebih dahulu.';return;}
+ try{
+  $('output').value=deobfuscateLuau(src);
+  $('copy').disabled=false;$('download').disabled=false;
+  $('status').textContent='V4 selesai (best effort). Hasil diformat seperti source Luau biasa; escape angka/hex dan pola decoder sederhana dicoba dibuka. VM/enkripsi khusus mungkin tetap tidak dapat dipulihkan.';
+ }catch(e){$('status').textContent='Gagal: '+e.message;}
+});
+$('clear').addEventListener('click',()=>{
+ $('source').value='';$('output').value='';
+ $('copy').disabled=true;$('download').disabled=true;$('status').textContent='';
+});
+$('copy').addEventListener('click',async()=>{
+ try{await navigator.clipboard.writeText($('output').value);$('status').textContent='Output berhasil disalin.';}
+ catch{$('output').select();document.execCommand('copy');$('status').textContent='Output disalin.';}
+});
+$('download').addEventListener('click',()=>{
+ const blob=new Blob([$('output').value],{type:'text/plain;charset=utf-8'});
+ const url=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=url;a.download='DUTZ_STUDIO_V1.lua';a.click();
+ setTimeout(()=>URL.revokeObjectURL(url),1000);
+});
+</script>
+</body>
+</html>
